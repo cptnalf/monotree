@@ -292,10 +292,11 @@ namespace Monotree
             else
             {
                 node.Attr.LabelMargin = 5;
+								node.Attr.Label = rev.ID /*.Substring(0, Math.Min(20, rev.ID.Length))*/ + "\n"  + rev.Author + "\n";
                 if ((bool)Properties.Settings.Default["ToLocalTime"])
-                    node.Attr.Label = rev.ID.Substring(0, Math.Min(20, rev.ID.Length)) + "\n" + rev.Author + "\n" + rev.Date.ToLocalTime().ToString();
+									node.Attr.Label += rev.Date.ToLocalTime().ToString();
                 else
-                    node.Attr.Label = rev.ID.Substring(0, Math.Min(20, rev.ID.Length)) + "\n" + rev.Author + "\n" + rev.Date.ToString();
+									node.Attr.Label += rev.Date.ToString();
                 node.Attr.Shape = Shape.Box;
             }
         }
@@ -305,13 +306,15 @@ namespace Monotree
         /// <param name="rev">Revision which is represented by the node.</param>
         private void FormatNodeFromDifferentBranch(Node node, Revision rev)
         {
-            node.Attr.Fontcolor = Microsoft.Glee.Drawing.Color.White;
+            node.Attr.Fontcolor = Microsoft.Glee.Drawing.Color.Black;//Microsoft.Glee.Drawing.Color.White;
             node.Attr.Fillcolor = Microsoft.Glee.Drawing.Color.LightGray;
             node.Attr.LabelMargin = 5;
+						node.Attr.Label = rev.Branch + "\n" +rev.ID /*.Substring(0, Math.Min(20, rev.Branch.Length))*/ + "\n" + rev.Author + "\n";
+						
             if ((bool)Properties.Settings.Default["ToLocalTime"])
-                node.Attr.Label = rev.ID.Substring(0, Math.Min(20, rev.Branch.Length)) + "\n" + rev.Author + "\n" + rev.Date.ToLocalTime().ToString();
+							node.Attr.Label += rev.Date.ToLocalTime().ToString();
             else
-                node.Attr.Label = rev.ID.Substring(0, Math.Min(20, rev.Branch.Length)) + "\n" + rev.Author + "\n" + rev.Date.ToString();
+							node.Attr.Label += rev.Date.ToString();
             node.Attr.Shape = Shape.Box;
         }
 

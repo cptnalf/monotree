@@ -6,192 +6,193 @@ using System.Text;
 
 namespace Monotree
 {
-    /// <summary>Database connection to monotone's database.</summary>
-    class Database
-    {
-        /// <summary>Filename of the database.</summary>
-        string filename;
+	/// <summary>Database connection to monotone's database.</summary>
+	class Database
+	{
+		/// <summary>Filename of the database.</summary>
+		string filename;
+		
+		/// <summary>raw list of all revisions. </summary>
+		SortedList<string,Revision> _revisions = new SortedList<string,Revision>();
+		
+		/// <summary>branch to revisions map</summary>
+		Dictionary<string,SortedList<string,Revision>> _branches = 
+			new Dictionary<string,SortedList<string,Revision>>();
+		
+		/// <summary>Creates a database connection.</summary>
+		/// <param name="filename">Filename of the database to connect to.</param>
+		public Database(string filename)
+		{
+			this.filename = filename;
+			Init();
+		}
 
-        /// <summary>Database connection.</summary>
-        DbConnection con;
+		/// <summary>Gets the filename of the database.</summary>
+		/// <value>Gets the filename of the database.</value>
+		public string FileName
+		{
+			get { return filename; }
+		}
 
-        /// <summary>Creates a database connection.</summary>
-        /// <param name="filename">Filename of the database to connect to.</param>
-        public Database(string filename)
-        {
-            this.filename = filename;
-            Init();
-        }
+		/// <summary>Initializes a database connection.</summary>
+		private void Init()
+		{
+			/* this table contains the directed-graph definition of 'parents' and 'children'.
+			 * so:
+			 * 1 -> 2 -> 4
+			 *      3 --/
+			 * so the parents of 4 are 2, 3.
+			 * parents of 2 are 1
+			 * parents of 3 are null.
+			 */			
+			
+			/* temp tables to generate the necessary data. */
+			DataTable raw = new DataTable("tmp");
+			raw.Columns.Add("cs", typeof(string));
+			raw.Columns.Add("parent", typeof(string));
+			raw.Columns.Add("branch", typeof(string));
+			raw.Columns.Add("author", typeof(string));
+			raw.Columns.Add("date", typeof(string));
+			
+			/* raw import. */
+			using (System.IO.StreamReader rdr = new System.IO.StreamReader(filename))
+				{
+					for(string line = rdr.ReadLine(); line != null; line = rdr.ReadLine())
+						{
+							string[] parts = line.Split('\0');
+							bool add_row = false;
+							
+							if (parts[1] == "0")
+								{
+									DataRow[] rows = raw.Select(string.Format("[cs] = {0}", parts[0]));
+									add_row = (rows != null && rows.Length !=0);
+								}
+							else { add_row = true; }
+							
+							if (add_row)
+								{ raw.Rows.Add(parts[0], parts[1], parts[2], parts[3], parts[4]); }
+						}
+				}
+			
+			/** add in the list o changesets, add in the branch lists. */
+			foreach(DataRow row in raw.Rows)
+				{
+					Revision r = new Revision((string)row["cs"], (string)row["branch"], 
+																		(string)row["author"], (string)row["date"],
+																		string.Empty);
+					
+					if (!_revisions.ContainsKey(r.ID))
+						{
+							_revisions.Add(r.ID, r);
+							if (_branches.ContainsKey(r.Branch)) { _branches[r.Branch].Add(r.ID,r); }
+							else
+								{
+									SortedList<string,Revision> l = new SortedList<string,Revision>();
+									l.Add(r.ID,r);
+									_branches.Add(r.Branch, l);
+								}
+						}
+				}
+			
+			foreach(string key in _revisions.Keys)
+				{
+					/* get the list of merge parents. */
+					DataRow[] recs = raw.Select(string.Format("[parent] = '{0}'", key));
+					foreach(DataRow row in recs)
+						{
+							string k = (string)row["cs"];
+							int idx = _revisions[key].Parents.FindIndex(delegate(string f) { return f == k; });
+							
+							if (idx < 0)
+								{
+									_revisions[key].Parents.Add((string)row["cs"]);
+								}
+						}
+					
+					/* now get the parent in this branch. */
+					SortedList<string,Revision> branch_hist;
+					if (_branches.TryGetValue(_revisions[key].Branch, out branch_hist))
+						{
+							int idx = branch_hist.IndexOfKey(key);
+							if (idx -1 > 0)
+								{
+									/* now add the previous changeset in this branch, since we found one */
+									_revisions[key].Parents.Add(branch_hist.Values[idx-1].ID);
+								}
+						}
+				}
+			
+			using (System.IO.StreamWriter wr = new System.IO.StreamWriter("flarg.branches.txt"))
+				{
+					foreach(string branch in _branches.Keys)
+						{
+							string[] values = new string[_branches[branch].Count];
+							_branches[branch].Keys.CopyTo(values, 0);
+							wr.WriteLine("{0}={1}", branch, string.Join(",",values));
+						}
+				}
+			
+			using (System.IO.StreamWriter wr = new System.IO.StreamWriter("flarg.txt"))
+				{
+					foreach(string key in _revisions.Keys)
+						{
+							string[] values = new string[_revisions[key].Parents.Count];
+							_revisions[key].Parents.CopyTo(values);
+							wr.WriteLine("{0}\0{1}\0{2}\0{3}\0{4}",
+													 _revisions[key].ID, _revisions[key].Branch, _revisions[key].Author,
+													 _revisions[key].Date, string.Join(",", values));
+						}
+				}
+		}
 
-        /// <summary>Gets the filename of the database.</summary>
-        /// <value>Gets the filename of the database.</value>
-        public string FileName
-        {
-            get { return filename; }
-        }
+		/// <summary>Gets branch names.</summary>
+		/// <returns>Branch names.</returns>
+		public List<string> GetBranchNames()
+		{
+			List<string> branches = new List<string>();
+			branches.AddRange(_branches.Keys);
+			
+			return branches;
+		}
 
-        /// <summary>Initializes a database connection.</summary>
-        private void Init()
-        {
-            DbProviderFactory dataFactory = DbProviderFactories.GetFactory(Properties.Settings.Default["ProviderName"].ToString());
-            con = dataFactory.CreateConnection();
-            con.ConnectionString = Properties.Settings.Default["ConnectionString"].ToString() + filename;
-            con.Open();
-        }
+		/// <summary>Gets the latest revisions for a branch.</summary>
+		/// <param name="branch">Branch to get revisions from.</param>
+		/// <param name="limit">Maximum number of revisions to get.</param>
+		/// <returns>Revisions.</returns>
+		public Dictionary<string, Revision> GetLatestRevisionIDs(string branch, int limit)
+		{
+			Dictionary<string,Revision> revisions = new Dictionary<string,Revision>();
+			
+			if (_branches.ContainsKey(branch))
+				{
+					SortedList<string,Revision> revs = _branches[branch];
+					limit = (limit > revs.Count ? revs.Count : limit);
+					int max = revs.Values.Count-1;
+					
+					for(int i=0; i < limit; ++i)
+						{
+							Revision r = revs.Values[max -i];
+							revisions.Add(r.ID, r);
+						}
+				}
+			return revisions;
+		}
+		
+		/// <summary>Gets a revision.</summary>
+		/// <param name="id">Unique identifier.</param>
+		/// <returns>Revision or null if the unique identifier is invalid.</returns>
+		public Revision GetRevision(string id)
+		{
+			Revision rev;
+			_revisions.TryGetValue(id, out rev);
+			return rev;
+		}
 
-        /// <summary>Decodes UTF8-encoded values.</summary>
-        /// <param name="byteArray">UTF8-encoded value.</param>
-        /// <returns>Decoded value.</returns>
-        private string UTF8Decode(byte[] byteArray)
-        {
-            UTF8Encoding encoder = new UTF8Encoding();
-            return encoder.GetString(byteArray).TrimEnd('\0');
-        }
-
-        /// <summary>Escapes a string to be used in a SQL statement.</summary>
-        /// <param name="s">String to escape.</param>
-        /// <returns>Escaped string.</returns>
-        private string SQLEscape(string s)
-        {
-            return s.Replace("'", "\\'");
-        }
-
-        /// <summary>Gets branch names.</summary>
-        /// <returns>Branch names.</returns>
-        public List<string> GetBranchNames()
-        {
-            DbCommand cmd = con.CreateCommand();
-            cmd.CommandText = "select distinct value from revision_certs where name = 'branch' order by value";
-            cmd.CommandType = CommandType.Text;
-
-            DbDataReader r = cmd.ExecuteReader();
-            List<string> names = new List<string>();
-            while (r.Read())
-            {
-                byte[] buffer = new byte[256];
-                r.GetBytes(0, 0, buffer, 0, buffer.Length);
-                names.Add(UTF8Decode(buffer));
-            }
-            return names;
-        }
-
-        /// <summary>Gets the latest revisions for a branch.</summary>
-        /// <param name="branch">Branch to get revisions from.</param>
-        /// <param name="limit">Maximum number of revisions to get.</param>
-        /// <returns>Revisions.</returns>
-        public Dictionary<string, Revision> GetLatestRevisionIDs(string branch, int limit)
-        {
-            DbCommand cmd = con.CreateCommand();
-            cmd.CommandText = "select distinct r.id from revisions as r inner join revision_certs as rc on (r.id = rc.id) where rc.name = 'branch' and rc.value like '" + SQLEscape(branch) + "' order by r.ROWID desc limit " + limit;
-            cmd.CommandType = CommandType.Text;
-
-            DbDataReader r = cmd.ExecuteReader();
-            Dictionary<string, Revision> revs = new Dictionary<string, Revision>(limit);
-            while (r.Read())
-            {
-                byte[] buffer1 = new byte[256];
-                r.GetBytes(0, 0, buffer1, 0, buffer1.Length);
-                string id = UTF8Decode(buffer1);
-
-                revs.Add(id, new Revision(id, branch));
-            }
-
-            foreach (KeyValuePair<string, Revision> rev in revs)
-            {
-                cmd = con.CreateCommand();
-                cmd.CommandText = "select distinct rc1.value, rc2.value, rc3.value from revisions as r inner join revision_certs as rc1 on (r.id = rc1.id) inner join revision_certs as rc2 on (r.id = rc2.id) inner join revision_certs as rc3 on (r.id = rc3.id) where r.id = '" + SQLEscape(rev.Key) + "' and rc1.name = 'author' and rc2.name = 'date' and rc3.name = 'changelog'";
-                cmd.CommandType = CommandType.Text;
-
-                r = cmd.ExecuteReader();
-                r.Read();
-
-                byte[] buffer1 = new byte[256];
-                r.GetBytes(0, 0, buffer1, 0, buffer1.Length);
-                string author = UTF8Decode(buffer1);
-
-                byte[] buffer2 = new byte[256];
-                r.GetBytes(1, 0, buffer2, 0, buffer2.Length);
-                string date = UTF8Decode(buffer2);
-
-                byte[] buffer3 = new byte[256];
-                r.GetBytes(2, 0, buffer3, 0, buffer3.Length);
-                string log = UTF8Decode(buffer3);
-
-                rev.Value.Author = author.Trim();
-                rev.Value.Date = DateTime.Parse(date);
-                rev.Value.Log = log.Trim();
-
-                cmd = con.CreateCommand();
-                cmd.CommandText = "select distinct parent from revision_ancestry where child = '" + SQLEscape(rev.Key) + "'";
-                cmd.CommandType = CommandType.Text;
-
-                r = cmd.ExecuteReader();
-                while (r.Read())
-                {
-                    buffer1 = new byte[256];
-                    r.GetBytes(0, 0, buffer1, 0, buffer1.Length);
-                    string id = UTF8Decode(buffer1);
-
-                    if (id != "")
-                        rev.Value.Parents.Add(id);
-                }
-            }
-
-            return revs;
-        }
-
-        /// <summary>Gets a revision.</summary>
-        /// <param name="id">Unique identifier.</param>
-        /// <returns>Revision or null if the unique identifier is invalid.</returns>
-        public Revision GetRevision(string id)
-        {
-            DbCommand cmd = con.CreateCommand();
-            cmd.CommandText = "select distinct rc1.value, rc2.value, rc3.value, rc4.value from revisions as r inner join revision_certs as rc1 on (r.id = rc1.id) inner join revision_certs as rc2 on (r.id = rc2.id) inner join revision_certs as rc3 on (r.id = rc3.id) inner join revision_certs as rc4 on (r.id = rc4.id) where r.id = '" + SQLEscape(id) + "' and rc1.name = 'author' and rc2.name = 'date' and rc3.name = 'changelog' and rc4.name = 'branch'";
-            cmd.CommandType = CommandType.Text;
-
-            DbDataReader r = cmd.ExecuteReader();
-            if (r.Read())
-            {
-                byte[] buffer1 = new byte[256];
-                r.GetBytes(0, 0, buffer1, 0, buffer1.Length);
-                string author = UTF8Decode(buffer1);
-
-                byte[] buffer2 = new byte[256];
-                r.GetBytes(1, 0, buffer2, 0, buffer2.Length);
-                string date = UTF8Decode(buffer2);
-
-                byte[] buffer3 = new byte[256];
-                r.GetBytes(2, 0, buffer3, 0, buffer3.Length);
-                string log = UTF8Decode(buffer3);
-
-                byte[] buffer4 = new byte[256];
-                r.GetBytes(3, 0, buffer4, 0, buffer4.Length);
-                string branch = UTF8Decode(buffer4);
-
-                return new Revision(id, branch.Trim(), author.Trim(), date, log.Trim());
-            }
-
-            return null;
-        }
-
-        /// <summary>Compresses a database.</summary>
-        /// <remarks>When a database is compressed all data is deleted which is not used by Monotree.</remarks>
-        public void Compress()
-        {
-            string[] tables = new string[] { "heights", "rosters", "roster_deltas", "public_keys", "manifest_certs", "manifest_deltas", "manifests", "files", "file_deltas" };
-
-            foreach (string table in tables)
-            {
-                DbCommand cmd = con.CreateCommand();
-                cmd.CommandText = "drop table if exists " + table;
-                cmd.CommandType = CommandType.Text;
-                cmd.ExecuteNonQuery();
-            }
-
-            DbCommand cmd2 = con.CreateCommand();
-            cmd2.CommandText = "vacuum";
-            cmd2.CommandType = CommandType.Text;
-            cmd2.ExecuteNonQuery();
-        }
-    }
+		/// <summary>Compresses a database.</summary>
+		/// <remarks>When a database is compressed all data is deleted which is not used by Monotree.</remarks>
+		public void Compress()
+		{
+			
+		}
+	}
 }
